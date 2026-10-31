@@ -12,6 +12,8 @@ from pathlib import Path
 
 import requests
 
+SIZES = {"short": (1080, 1920), "long": (1920, 1080)}
+
 VOICES = {
     "English (India) - Female": "en-IN-NeerjaNeural",
     "English (India) - Male": "en-IN-PrabhatNeural",
@@ -129,10 +131,58 @@ def pexels_clip(query, api_key, cache_dir, used, orientation="portrait"):
     return None
 
 
+def pixabay_clip(query, api_key, cache_dir, used, orientation="portrait"):
+    """Free alternative to Pexels (key is instant at pixabay.com after signup).
+    Pixabay is mostly landscape, so for Shorts the renderer centre-crops it to vertical."""
+    r = requests.get(
+        "https://pixabay.com/api/videos/",
+        params={"key": api_key, "q": query[:100], "per_page": 20, "video_type": "film"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    hits = r.json().get("hits", [])
+    random.shuffle(hits)
+    for h in hits:
+        if h["id"] in used:
+            continue
+        vs = h.get("videos", {})
+        pick = next((vs[n] for n in ("medium", "small", "large", "tiny")
+                     if vs.get(n) and vs[n].get("url")), None)
+        if not pick:
+            continue
+        dest = Path(cache_dir) / f"pixabay_{h['id']}.mp4"
+        if not dest.exists():
+            with requests.get(pick["url"], stream=True, timeout=90) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as fh:
+                    for part in resp.iter_content(1 << 20):
+                        fh.write(part)
+        used.add(h["id"])
+        return dest
+    return None
+
+
+GRADIENTS = [("0x0f2027", "0x2c5364", "0x203a43"), ("0x232526", "0x414345", "0x1c1c1c"),
+             ("0x141e30", "0x243b55", "0x0f2027"), ("0x1a2a6c", "0x2b5876", "0x4e4376"),
+             ("0x0b3d2e", "0x145a32", "0x0e4d3a")]
+
+
+def generated_clips(n, kind, cache_dir, seconds=8):
+    """No-download, no-key option: slowly moving gradient backgrounds. Captions carry the video."""
+    w, h = SIZES[kind]
+    out = []
+    for i in range(max(n, 1)):
+        c0, c1, c2 = GRADIENTS[i % len(GRADIENTS)]
+        dest = Path(cache_dir) / f"gen_{kind}_{i}.mp4"
+        if not dest.exists():
+            _run(["ffmpeg", "-y", "-f", "lavfi", "-i",
+                  f"gradients=s={w}x{h}:d={seconds}:speed=0.03:c0={c0}:c1={c1}:c2={c2}:nb_colors=3:rate=30",
+                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", str(dest)])
+        out.append(dest)
+    return out
+
+
 # ---------- render ----------
-SIZES = {"short": (1080, 1920), "long": (1920, 1080)}
-
-
 def render_video(clips, audio_path, srt_text, out_path, kind="short", font="Arial", font_size=None,
                  music_path=None, music_volume=0.08, max_seg_seconds=8.0):
     """Stitch clips to 1080x1920 (short) or 1920x1080 (long), add voice (+ optional quiet music),
