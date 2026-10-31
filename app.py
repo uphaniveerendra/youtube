@@ -38,8 +38,22 @@ def db():
 
 # ---------- sidebar ----------
 st.sidebar.title("🎬 Shorts Studio")
-api_key = st.sidebar.text_input("Pexels API key (free)", value=os.getenv("PEXELS_API_KEY", ""), type="password",
-                                help="Get one free at pexels.com/api")
+SOURCES = ["Pixabay stock footage (free key, instant)", "Pexels stock footage (free key)",
+           "My own clips (upload, no key)", "Animated backgrounds (no key, no download)"]
+source = st.sidebar.selectbox("Footage source", SOURCES, index=3,
+                              help="Pick the animated backgrounds to test the app without any footage key.")
+api_key = ""
+own_files = []
+if source.startswith("Pixabay"):
+    api_key = st.sidebar.text_input("Pixabay API key", value=os.getenv("PIXABAY_API_KEY", ""), type="password",
+                                    help="Sign up free at pixabay.com, then open pixabay.com/api/docs to see your key.")
+    st.sidebar.caption("Footage from Pixabay.")
+elif source.startswith("Pexels"):
+    api_key = st.sidebar.text_input("Pexels API key", value=os.getenv("PEXELS_API_KEY", ""), type="password",
+                                    help="Free at pexels.com/api")
+elif source.startswith("My own"):
+    own_files = st.sidebar.file_uploader("Upload your clips (MP4/MOV)", type=["mp4", "mov"],
+                                         accept_multiple_files=True)
 anthropic_key = st.sidebar.text_input("Anthropic API key (for AI drafts)", value=os.getenv("ANTHROPIC_API_KEY", ""),
                                       type="password", help="console.anthropic.com. Optional: you can write scripts yourself.")
 yt_file = st.sidebar.file_uploader("YouTube OAuth file (client_secret.json), optional", type=["json"])
@@ -118,8 +132,10 @@ with tab_make:
         sim = engine.max_similarity(script, prev)
         if not engine.ffmpeg_available():
             st.error("Install ffmpeg first.")
-        elif not api_key:
-            st.error("Add your free Pexels API key in the sidebar.")
+        elif source[:3] in ("Pix", "Pex") and not api_key:
+            st.error("Add your footage API key in the sidebar, or choose 'Animated backgrounds' (no key needed).")
+        elif source.startswith("My own") and not own_files:
+            st.error("Upload at least one clip in the sidebar, or choose another footage source.")
         elif not (ok_review and ok_media):
             st.error("Tick both confirmation boxes first.")
         elif not title:
@@ -141,15 +157,25 @@ with tab_make:
                     dur = engine.media_duration(mp3)
                     st.write(f"Voiceover ready ({dur:.0f}s). Fetching footage...")
                     orient = "portrait" if kind == "short" else "landscape"
+                    kws = [k.strip() for k in ss["kw_in"].splitlines() if k.strip()][:40]
                     used, clips = set(), []
-                    for q in [k.strip() for k in ss["kw_in"].splitlines() if k.strip()][:40]:
-                        c = engine.pexels_clip(q, api_key, CACHE, used, orientation=orient)
-                        if c:
-                            clips.append(c)
-                        else:
-                            st.write(f"No clip found for '{q}', skipping.")
+                    if source.startswith("Animated"):
+                        clips = engine.generated_clips(max(len(kws), 3), kind, CACHE)
+                    elif source.startswith("My own"):
+                        for i, f in enumerate(own_files):
+                            p = CACHE / f"own_{stamp}_{i}{Path(f.name).suffix.lower()}"
+                            p.write_bytes(f.read())
+                            clips.append(p)
+                    else:
+                        fetch = engine.pixabay_clip if source.startswith("Pixabay") else engine.pexels_clip
+                        for q in kws:
+                            c = fetch(q, api_key, CACHE, used, orientation=orient)
+                            if c:
+                                clips.append(c)
+                            else:
+                                st.write(f"No clip found for '{q}', skipping.")
                     if not clips:
-                        raise RuntimeError("No footage found. Try different keywords.")
+                        raise RuntimeError("No footage found. Try different keywords or another footage source.")
                     st.write("Adding captions and rendering (long videos take a few minutes)...")
                     srt = engine.build_srt(words, script, dur,
                                            words_per_caption=3 if kind == "short" else 6,
@@ -312,7 +338,7 @@ with tab_rules:
     st.subheader("Stay monetisable: pre-upload checklist")
     st.markdown("""
 - **Original value in every video**: your own script, angle, example or opinion. Not a re-read of someone else's article.
-- **No reused content**: only footage, images, and music you have rights to (Pexels/Pixabay footage, royalty-free music).
+- **No reused content**: only footage, images, and music you have rights to (Pexels/Pixabay footage, your own clips, royalty-free music).
 - **No mass-produced sameness**: vary hooks, topics and structure. YouTube targets repetitive, templated channels.
 - **Disclose realistic AI-generated or altered content** in YouTube Studio when it applies.
 - **No misleading titles or thumbnails**, no fake claims, no income promises.
